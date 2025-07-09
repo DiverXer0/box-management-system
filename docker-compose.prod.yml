@@ -1,0 +1,21 @@
+# docker-compose.prod.yml - Production configuration
+version: '3.8'
+
+services:
+  mongodb:
+    image: mongo:7.0
+    container_name: box-management-mongodb
+    restart: always
+    volumes:
+      - mongodb_data:/data/db
+    environment:
+      - MONGO_INITDB_DATABASE=box_management
+    networks:
+      - internal
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  backen
