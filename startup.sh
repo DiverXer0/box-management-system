@@ -1,45 +1,36 @@
-[supervisord]
-nodaemon=true
-user=root
-logfile=/var/log/supervisor/supervisord.log
-pidfile=/var/run/supervisord.pid
+#!/bin/bash
+# startup.sh - Startup script for all-in-one container
 
-[program:mongodb]
-command=/usr/bin/mongod --bind_ip 127.0.0.1 --dbpath /data/db
-autostart=true
-autorestart=true
-stdout_logfile=/var/log/mongodb/stdout.log
-stderr_logfile=/var/log/mongodb/stderr.log
-priority=10
+# Create necessary directories
+mkdir -p /var/log/supervisor
+mkdir -p /var/log/mongodb
+mkdir -p /var/log/backend
+mkdir -p /var/log/nginx
+mkdir -p /data/db
 
-[program:backend]
-command=python3 /app/backend/main.py
-directory=/app/backend
-autostart=true
-autorestart=true
-startretries=10
-startsecs=10
-stdout_logfile=/var/log/backend/stdout.log
-stderr_logfile=/var/log/backend/stderr.log
-environment=MONGODB_URL="mongodb://127.0.0.1:27017",DATABASE_NAME="box_management",CORS_ORIGINS=""
-priority=20
+# Initialize MongoDB if needed
+if [ ! -f /data/db/.initialized ]; then
+    echo "Initializing MongoDB..."
+    mongod --fork --logpath /var/log/mongodb/init.log --dbpath /data/db
+    sleep 5
+    
+    # Create database and indexes
+    mongosh --eval "
+        use box_management;
+        db.createCollection('boxes');
+        db.createCollection('items');
+        db.boxes.createIndex({name: 1});
+        db.boxes.createIndex({location: 1});
+        db.items.createIndex({name: 1});
+        db.items.createIndex({box_id: 1});
+    "
+    
+    # Stop MongoDB (supervisor will start it properly)
+    mongod --shutdown
+    touch /data/db/.initialized
+    echo "MongoDB initialized!"
+fi
 
-[program:nginx]
-command=/usr/sbin/nginx -g "daemon off;"
-autostart=true
-autorestart=true
-stdout_logfile=/var/log/nginx/stdout.log
-stderr_logfile=/var/log/nginx/stderr.log
-priority=30
-
-[group:boxmanagement]
-programs=mongodb,backend,nginx
-
-[unix_http_server]
-file=/var/run/supervisor.sock
-
-[supervisorctl]
-serverurl=unix:///var/run/supervisor.sock
-
-[rpcinterface:supervisor]
-supervisor.rpcinterface_factory = supervisor.rpcinterface:make_main_rpcinterface
+# Start supervisor
+echo "Starting all services..."
+exec /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf
