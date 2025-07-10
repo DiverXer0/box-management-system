@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field
@@ -6,6 +6,7 @@ from typing import Optional, List
 from datetime import datetime
 import uuid
 import re
+import os
 from contextlib import asynccontextmanager
 
 # Pydantic models
@@ -58,8 +59,8 @@ class SearchResult(BaseModel):
     quantity: Optional[int] = None
 
 # Database connection
-MONGODB_URL = "mongodb://mongodb:27017"
-DATABASE_NAME = "box_management"
+MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://mongodb:27017")
+DATABASE_NAME = os.getenv("DATABASE_NAME", "box_management")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -85,13 +86,25 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS configuration
+# Dynamic CORS configuration
+def get_allowed_origins():
+    """Get allowed origins from environment or allow all in development"""
+    env_origins = os.getenv("CORS_ORIGINS", "")
+    
+    if env_origins:
+        return [origin.strip() for origin in env_origins.split(",")]
+    
+    # In production, you might want to be more restrictive
+    # For now, allow all origins but you can customize this
+    return ["*"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify your frontend URL
+    allow_origins=get_allowed_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"]
 )
 
 # Health check

@@ -1,4 +1,4 @@
-# docker-compose.yml - Development configuration
+# docker-compose.deploy.yml - For deploying from Docker Hub images
 version: '3.8'
 
 services:
@@ -6,12 +6,12 @@ services:
     image: mongo:7.0
     container_name: box-management-mongodb
     restart: unless-stopped
-    ports:
-      - "27017:27017"
     volumes:
       - mongodb_data:/data/db
     environment:
       - MONGO_INITDB_DATABASE=box_management
+    networks:
+      - internal
     healthcheck:
       test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
       interval: 10s
@@ -19,43 +19,48 @@ services:
       retries: 5
 
   backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
+    image: YOUR-DOCKERHUB-USERNAME/box-management-backend:latest
     container_name: box-management-backend
     restart: unless-stopped
-    ports:
-      - "8000:8000"
     depends_on:
       mongodb:
         condition: service_healthy
     environment:
       - MONGODB_URL=mongodb://mongodb:27017
       - DATABASE_NAME=box_management
-    volumes:
-      - ./backend:/app
-    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+      - CORS_ORIGINS=
+    networks:
+      - internal
 
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile.dev
-    container_name: box-management-frontend
+  nginx:
+    image: nginx:alpine
+    container_name: box-management-nginx
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx-dynamic.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - backend
+    networks:
+      - internal
+
+  frontend:
+    image: YOUR-DOCKERHUB-USERNAME/box-management-frontend:latest
+    container_name: box-management-frontend
+    restart: unless-stopped
     depends_on:
       - backend
     environment:
-      - REACT_APP_API_URL=http://localhost:8000/api
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
-    stdin_open: true
+      - NODE_ENV=production
+      - REACT_APP_API_URL=
+    networks:
+      - internal
 
 volumes:
   mongodb_data:
 
 networks:
-  default:
-    name: box-management-network
+  internal:
+    driver: bridge

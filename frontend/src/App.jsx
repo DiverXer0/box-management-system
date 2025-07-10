@@ -8,8 +8,25 @@ import 'jspdf-autotable';
 import Fuse from 'fuse.js';
 import './App.css';
 
-// Configure axios
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000/api';
+// Configure axios with dynamic base URL
+const getApiBaseUrl = () => {
+  // In production, use relative URL
+  if (process.env.NODE_ENV === 'production') {
+    return '/api';
+  }
+  
+  // In development, check if REACT_APP_API_URL is set
+  if (process.env.REACT_APP_API_URL) {
+    return process.env.REACT_APP_API_URL;
+  }
+  
+  // Default: use current host with port 8000 for development
+  const protocol = window.location.protocol;
+  const hostname = window.location.hostname;
+  return `${protocol}//${hostname}:8000/api`;
+};
+
+const API_BASE_URL = getApiBaseUrl();
 axios.defaults.baseURL = API_BASE_URL;
 
 // Utility functions
@@ -686,6 +703,7 @@ const QRCodeModal = ({ box, onClose }) => {
   }, [box]);
 
   const generateQRCode = async () => {
+    // Use the full URL from current location
     const url = `${window.location.origin}/box/${box.id}`;
     try {
       const qrCode = await QRCode.toDataURL(url, {
@@ -994,6 +1012,9 @@ const Navigation = () => {
 
 // Main App Component
 const App = () => {
+  // Log the API URL being used (for debugging)
+  console.log('API Base URL:', API_BASE_URL);
+  
   return (
     <Router>
       <div className="min-h-screen bg-gray-100">
