@@ -2,13 +2,13 @@
 # This creates a single container with MongoDB, Backend, and Frontend
 
 # Stage 1: Build Frontend
-FROM node:18-alpine as frontend-build
+FROM node:18-alpine AS frontend-build
 
 WORKDIR /frontend
 COPY frontend/package*.json ./
 
-# Use npm install instead of npm ci to handle missing package-lock.json
-RUN npm install --only=production
+# Install ALL dependencies (including dev) for the build
+RUN npm install
 
 COPY frontend/ ./
 ENV REACT_APP_API_URL=""
@@ -54,7 +54,7 @@ COPY backend/requirements.txt .
 RUN pip3 install --no-cache-dir -r requirements.txt
 COPY backend/ .
 
-# Setup Frontend
+# Setup Frontend (copy the built files from the build stage)
 COPY --from=frontend-build /frontend/build /usr/share/nginx/html
 
 # Copy Nginx configuration
@@ -63,7 +63,7 @@ COPY nginx/nginx-allinone.conf /etc/nginx/nginx.conf
 # Copy Supervisor configuration
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
-# Create directories for MongoDB
+# Create directories
 RUN mkdir -p /data/db /var/log/mongodb /var/log/supervisor /var/log/backend /var/log/nginx
 
 # Create startup script
