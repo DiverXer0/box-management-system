@@ -34,5 +34,3 @@ fi
 # Start supervisor
 echo "Starting all services..."
 exec /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf
-
-#fakecommit

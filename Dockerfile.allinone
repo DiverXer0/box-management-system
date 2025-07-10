@@ -58,13 +58,11 @@ COPY backend/ .
 # Setup Frontend (copy the built files from the build stage)
 COPY --from=frontend-build /frontend/build /usr/share/nginx/html
 
-# Copy Nginx configuration and fix line endings
+# Copy Nginx configuration
 COPY nginx/nginx-allinone.conf /etc/nginx/nginx.conf
-RUN dos2unix /etc/nginx/nginx.conf || true
 
-# Copy Supervisor configuration and fix line endings
+# Copy Supervisor configuration
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
-RUN dos2unix /etc/supervisor/conf.d/supervisord.conf || true
 
 # Create directories
 RUN mkdir -p /data/db /var/log/mongodb /var/log/supervisor /var/log/backend /var/log/nginx
@@ -72,27 +70,6 @@ RUN mkdir -p /data/db /var/log/mongodb /var/log/supervisor /var/log/backend /var
 # Copy startup script and fix line endings
 COPY startup.sh /startup.sh
 RUN dos2unix /startup.sh && chmod +x /startup.sh
-
-# Alternative: Create startup script inline to avoid line ending issues
-RUN echo '#!/bin/bash\n\
-# Create necessary directories\n\
-mkdir -p /var/log/supervisor /var/log/mongodb /var/log/backend /var/log/nginx /data/db\n\
-\n\
-# Initialize MongoDB if needed\n\
-if [ ! -f /data/db/.initialized ]; then\n\
-    echo "Initializing MongoDB..."\n\
-    mongod --fork --logpath /var/log/mongodb/init.log --dbpath /data/db\n\
-    sleep 5\n\
-    mongosh --eval "use box_management; db.createCollection(\"boxes\"); db.createCollection(\"items\");"\n\
-    mongod --shutdown\n\
-    touch /data/db/.initialized\n\
-    echo "MongoDB initialized!"\n\
-fi\n\
-\n\
-# Start supervisor\n\
-echo "Starting all services..."\n\
-exec /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf\n' > /startup-backup.sh && \
-    chmod +x /startup-backup.sh
 
 # Expose ports
 EXPOSE 80 443
@@ -102,5 +79,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost/api/health || exit 1
 
 # Start everything with supervisor
-# Try the main startup script, fall back to backup if it fails
-CMD ["/bin/bash", "-c", "/startup.sh || /startup-backup.sh"]
+CMD ["/startup.sh"]
