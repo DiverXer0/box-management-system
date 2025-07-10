@@ -6,7 +6,9 @@ FROM node:18-alpine as frontend-build
 
 WORKDIR /frontend
 COPY frontend/package*.json ./
-RUN npm ci --only=production
+
+# Use npm install instead of npm ci to handle missing package-lock.json
+RUN npm install --only=production
 
 COPY frontend/ ./
 ENV REACT_APP_API_URL=""
@@ -19,28 +21,32 @@ FROM ubuntu:22.04
 # Prevent interactive prompts during installation
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install required packages
+# Install required packages first
 RUN apt-get update && apt-get install -y \
+    # Basic tools
+    curl \
+    wget \
+    gnupg \
+    lsb-release \
+    software-properties-common \
+    ca-certificates \
     # Python and pip for backend
     python3.11 \
     python3-pip \
-    # MongoDB
-    mongodb-org \
     # Nginx for frontend
     nginx \
     # Supervisor to manage multiple processes
     supervisor \
-    # Utilities
-    curl \
-    wget \
-    gnupg \
     && rm -rf /var/lib/apt/lists/*
 
-# Install MongoDB (if not available in default repos)
-RUN wget -qO - https://www.mongodb.org/static/pgp/server-7.0.asc | apt-key add - && \
-    echo "deb [ arch=amd64,arm64 ] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/7.0 multiverse" | tee /etc/apt/sources.list.d/mongodb-org-7.0.list && \
+# Install MongoDB separately with proper key management
+RUN curl -fsSL https://pgp.mongodb.com/server-7.0.asc | \
+    gpg -o /usr/share/keyrings/mongodb-server-7.0.gpg --dearmor && \
+    echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-7.0.gpg ] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/7.0 multiverse" | \
+    tee /etc/apt/sources.list.d/mongodb-org-7.0.list && \
     apt-get update && \
-    apt-get install -y mongodb-org || true
+    apt-get install -y mongodb-org && \
+    rm -rf /var/lib/apt/lists/*
 
 # Setup Backend
 WORKDIR /app/backend
@@ -58,7 +64,7 @@ COPY nginx/nginx-allinone.conf /etc/nginx/nginx.conf
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
 # Create directories for MongoDB
-RUN mkdir -p /data/db /var/log/mongodb
+RUN mkdir -p /data/db /var/log/mongodb /var/log/supervisor /var/log/backend /var/log/nginx
 
 # Create startup script
 COPY startup.sh /startup.sh
