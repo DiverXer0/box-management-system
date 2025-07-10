@@ -1,0 +1,75 @@
+# Dockerfile.allinone - All-in-One Box Management System
+# This creates a single container with MongoDB, Backend, and Frontend
+
+# Stage 1: Build Frontend
+FROM node:18-alpine as frontend-build
+
+WORKDIR /frontend
+COPY frontend/package*.json ./
+RUN npm ci --only=production
+
+COPY frontend/ ./
+ENV REACT_APP_API_URL=""
+ENV NODE_ENV=production
+RUN npm run build
+
+# Stage 2: Final Image with Everything
+FROM ubuntu:22.04
+
+# Prevent interactive prompts during installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install required packages
+RUN apt-get update && apt-get install -y \
+    # Python and pip for backend
+    python3.11 \
+    python3-pip \
+    # MongoDB
+    mongodb-org \
+    # Nginx for frontend
+    nginx \
+    # Supervisor to manage multiple processes
+    supervisor \
+    # Utilities
+    curl \
+    wget \
+    gnupg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install MongoDB (if not available in default repos)
+RUN wget -qO - https://www.mongodb.org/static/pgp/server-7.0.asc | apt-key add - && \
+    echo "deb [ arch=amd64,arm64 ] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/7.0 multiverse" | tee /etc/apt/sources.list.d/mongodb-org-7.0.list && \
+    apt-get update && \
+    apt-get install -y mongodb-org || true
+
+# Setup Backend
+WORKDIR /app/backend
+COPY backend/requirements.txt .
+RUN pip3 install --no-cache-dir -r requirements.txt
+COPY backend/ .
+
+# Setup Frontend
+COPY --from=frontend-build /frontend/build /usr/share/nginx/html
+
+# Copy Nginx configuration
+COPY nginx/nginx-allinone.conf /etc/nginx/nginx.conf
+
+# Copy Supervisor configuration
+COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+
+# Create directories for MongoDB
+RUN mkdir -p /data/db /var/log/mongodb
+
+# Create startup script
+COPY startup.sh /startup.sh
+RUN chmod +x /startup.sh
+
+# Expose ports
+EXPOSE 80 443
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost/api/health || exit 1
+
+# Start everything with supervisor
+CMD ["/startup.sh"]

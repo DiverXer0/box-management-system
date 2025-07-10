@@ -1,0 +1,45 @@
+[supervisord]
+nodaemon=true
+user=root
+logfile=/var/log/supervisor/supervisord.log
+pidfile=/var/run/supervisord.pid
+
+[program:mongodb]
+command=/usr/bin/mongod --bind_ip 127.0.0.1 --dbpath /data/db
+autostart=true
+autorestart=true
+stdout_logfile=/var/log/mongodb/stdout.log
+stderr_logfile=/var/log/mongodb/stderr.log
+priority=10
+
+[program:backend]
+command=python3 /app/backend/main.py
+directory=/app/backend
+autostart=true
+autorestart=true
+startretries=10
+startsecs=10
+stdout_logfile=/var/log/backend/stdout.log
+stderr_logfile=/var/log/backend/stderr.log
+environment=MONGODB_URL="mongodb://127.0.0.1:27017",DATABASE_NAME="box_management",CORS_ORIGINS=""
+priority=20
+
+[program:nginx]
+command=/usr/sbin/nginx -g "daemon off;"
+autostart=true
+autorestart=true
+stdout_logfile=/var/log/nginx/stdout.log
+stderr_logfile=/var/log/nginx/stderr.log
+priority=30
+
+[group:boxmanagement]
+programs=mongodb,backend,nginx
+
+[unix_http_server]
+file=/var/run/supervisor.sock
+
+[supervisorctl]
+serverurl=unix:///var/run/supervisor.sock
+
+[rpcinterface:supervisor]
+supervisor.rpcinterface_factory = supervisor.rpcinterface:make_main_rpcinterface
