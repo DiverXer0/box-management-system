@@ -58,21 +58,33 @@ class SearchResult(BaseModel):
     location: Optional[str] = None
     quantity: Optional[int] = None
 
-# Database connection
-MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://mongodb:27017")
+# Database connection - Fixed for all-in-one container
+# In all-in-one container, MongoDB runs on localhost
+MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://127.0.0.1:27017")
 DATABASE_NAME = os.getenv("DATABASE_NAME", "box_management")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    app.mongodb_client = AsyncIOMotorClient(MONGODB_URL)
-    app.mongodb = app.mongodb_client[DATABASE_NAME]
-    
-    # Create indexes
-    await app.mongodb.boxes.create_index("name")
-    await app.mongodb.boxes.create_index("location")
-    await app.mongodb.items.create_index("name")
-    await app.mongodb.items.create_index("box_id")
+    print(f"Connecting to MongoDB at: {MONGODB_URL}")
+    try:
+        app.mongodb_client = AsyncIOMotorClient(MONGODB_URL, serverSelectionTimeoutMS=5000)
+        app.mongodb = app.mongodb_client[DATABASE_NAME]
+        
+        # Test connection
+        await app.mongodb_client.admin.command('ping')
+        print("Successfully connected to MongoDB!")
+        
+        # Create indexes
+        await app.mongodb.boxes.create_index("name")
+        await app.mongodb.boxes.create_index("location")
+        await app.mongodb.items.create_index("name")
+        await app.mongodb.items.create_index("box_id")
+        print("Database indexes created successfully!")
+        
+    except Exception as e:
+        print(f"Failed to connect to MongoDB: {e}")
+        raise
     
     yield
     
@@ -110,7 +122,18 @@ app.add_middleware(
 # Health check
 @app.get("/api/health")
 async def health_check():
-    return {"status": "healthy", "timestamp": datetime.utcnow()}
+    try:
+        # Check MongoDB connection
+        await app.mongodb_client.admin.command('ping')
+        db_status = "connected"
+    except:
+        db_status = "disconnected"
+    
+    return {
+        "status": "healthy",
+        "timestamp": datetime.utcnow(),
+        "database": db_status
+    }
 
 # Box endpoints
 @app.get("/api/boxes", response_model=List[Box])
@@ -381,4 +404,5 @@ async def get_statistics():
 
 if __name__ == "__main__":
     import uvicorn
+    print("Starting Box Management System Backend...")
     uvicorn.run(app, host="0.0.0.0", port=8000)
