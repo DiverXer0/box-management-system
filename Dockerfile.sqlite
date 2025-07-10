@@ -1,0 +1,159 @@
+# Dockerfile.sqlite - Lightweight SQLite version
+# Works on any system - no MongoDB required!
+
+# Stage 1: Build Frontend
+FROM node:18-alpine AS frontend-build
+
+WORKDIR /frontend
+COPY frontend/package*.json ./
+RUN npm install
+COPY frontend/ ./
+ENV REACT_APP_API_URL=""
+ENV NODE_ENV=production
+RUN npm run build
+
+# Stage 2: Final lightweight image
+FROM python:3.11-slim
+
+# Install minimal requirements
+RUN apt-get update && apt-get install -y \
+    nginx \
+    supervisor \
+    curl \
+    dos2unix \
+    && rm -rf /var/lib/apt/lists/*
+
+# Setup Backend
+WORKDIR /app/backend
+COPY backend/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY backend/ .
+
+# Setup Frontend
+COPY --from=frontend-build /frontend/build /usr/share/nginx/html
+
+# Copy and fix Nginx configurationa# Dockerfile.sqlite - Lightweight SQLite version
+# Works on any system - no MongoDB required!
+
+# Stage 1: Build Frontend
+FROM node:18-alpine AS frontend-build
+
+WORKDIR /frontend
+COPY frontend/package*.json ./
+RUN npm install
+COPY frontend/ ./
+ENV REACT_APP_API_URL=""
+ENV NODE_ENV=production
+RUN npm run build
+
+# Stage 2: Final lightweight image
+FROM python:3.11-slim
+
+# Install minimal requirements
+RUN apt-get update && apt-get install -y \
+    nginx \
+    supervisor \
+    curl \
+    dos2unix \
+    && rm -rf /var/lib/apt/lists/*
+
+# Setup Backend
+WORKDIR /app/backend
+COPY backend/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY backend/ .
+
+# Setup Frontend
+COPY --from=frontend-build /frontend/build /usr/share/nginx/html
+
+# Copy and fix Nginx configuration
+COPY nginx/nginx-allinone.conf /etc/nginx/nginx.conf
+RUN dos2unix /etc/nginx/nginx.conf || true
+
+# Create supervisord configuration for SQLite
+RUN echo '[supervisord]\n\
+nodaemon=true\n\
+user=root\n\
+logfile=/var/log/supervisor/supervisord.log\n\
+pidfile=/var/run/supervisord.pid\n\
+\n\
+[program:backend]\n\
+command=/usr/local/bin/python -m uvicorn main:app --host 0.0.0.0 --port 8000\n\
+directory=/app/backend\n\
+autostart=true\n\
+autorestart=true\n\
+stdout_logfile=/var/log/supervisor/backend.log\n\
+stderr_logfile=/var/log/supervisor/backend_error.log\n\
+environment=DATABASE_URL="sqlite:///./data/box_management.db",PYTHONUNBUFFERED="1"\n\
+\n\
+[program:nginx]\n\
+command=/usr/sbin/nginx -g "daemon off;"\n\
+autostart=true\n\
+autorestart=true\n\
+stdout_logfile=/var/log/supervisor/nginx.log\n\
+stderr_logfile=/var/log/supervisor/nginx_error.log\n' > /etc/supervisor/conf.d/supervisord.conf
+
+# Create directories
+RUN mkdir -p /var/log/supervisor /app/backend/data
+
+# Create simple startup script
+RUN echo '#!/bin/bash\n\
+echo "Starting Box Management System with SQLite..."\n\
+mkdir -p /var/log/supervisor /app/backend/data\n\
+exec /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf\n' > /startup.sh && \
+    chmod +x /startup.sh
+
+# Expose port
+EXPOSE 80
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost/api/health || exit 1
+
+# Start services
+CMD ["/startup.sh"]
+COPY nginx/nginx-allinone.conf /etc/nginx/nginx.conf
+RUN dos2unix /etc/nginx/nginx.conf || true
+
+# Create supervisord configuration for SQLite
+RUN echo '[supervisord]\n\
+nodaemon=true\n\
+user=root\n\
+logfile=/var/log/supervisor/supervisord.log\n\
+pidfile=/var/run/supervisord.pid\n\
+\n\
+[program:backend]\n\
+command=/usr/local/bin/python -m uvicorn main:app --host 0.0.0.0 --port 8000\n\
+directory=/app/backend\n\
+autostart=true\n\
+autorestart=true\n\
+stdout_logfile=/var/log/supervisor/backend.log\n\
+stderr_logfile=/var/log/supervisor/backend_error.log\n\
+environment=DATABASE_URL="sqlite:///./data/box_management.db",PYTHONUNBUFFERED="1"\n\
+\n\
+[program:nginx]\n\
+command=/usr/sbin/nginx -g "daemon off;"\n\
+autostart=true\n\
+autorestart=true\n\
+stdout_logfile=/var/log/supervisor/nginx.log\n\
+stderr_logfile=/var/log/supervisor/nginx_error.log\n' > /etc/supervisor/conf.d/supervisord.conf
+
+# Create directories
+RUN mkdir -p /var/log/supervisor /app/backend/data
+
+# Create simple startup script
+RUN echo '#!/bin/bash\n\
+echo "Starting Box Management System with SQLite..."\n\
+mkdir -p /var/log/supervisor /app/backend/data\n\
+exec /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf\n' > /startup.sh && \
+    chmod +x /startup.sh
+
+# Expose port
+EXPOSE 80
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost/api/health || exit 1
+
+# Start services
+CMD ["/startup.sh"]

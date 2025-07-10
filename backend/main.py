@@ -1,13 +1,53 @@
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
-from pydantic import BaseModel, Field
-from typing import Optional, List
+from sqlalchemy import create_engine, Column, String, Integer, DateTime, Text, select, or_, and_, func
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.pool import StaticPool
 from datetime import datetime
 import uuid
-import re
 import os
+from typing import List, Optional
+from pydantic import BaseModel, Field
 from contextlib import asynccontextmanager
+
+# Database setup - SQLite
+SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./box_management.db")
+
+# Create engine with SQLite-specific settings
+engine = create_engine(
+    SQLALCHEMY_DATABASE_URL,
+    connect_args={"check_same_thread": False},
+    poolclass=StaticPool,
+)
+
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+# SQLAlchemy models
+class BoxDB(Base):
+    __tablename__ = "boxes"
+    
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    name = Column(String, nullable=False, index=True)
+    location = Column(String, default="", index=True)
+    description = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+class ItemDB(Base):
+    __tablename__ = "items"
+    
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    name = Column(String, nullable=False, index=True)
+    quantity = Column(Integer, default=1)
+    details = Column(Text, default="")
+    box_id = Column(String, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+# Create tables
+Base.metadata.create_all(bind=engine)
 
 # Pydantic models
 class BoxBase(BaseModel):
@@ -58,38 +98,28 @@ class SearchResult(BaseModel):
     location: Optional[str] = None
     quantity: Optional[int] = None
 
-# Database connection - Fixed for all-in-one container
-# In all-in-one container, MongoDB runs on localhost
-MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://127.0.0.1:27017")
-DATABASE_NAME = os.getenv("DATABASE_NAME", "box_management")
+# Dependency to get DB session
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    print(f"Connecting to MongoDB at: {MONGODB_URL}")
-    try:
-        app.mongodb_client = AsyncIOMotorClient(MONGODB_URL, serverSelectionTimeoutMS=5000)
-        app.mongodb = app.mongodb_client[DATABASE_NAME]
-        
-        # Test connection
-        await app.mongodb_client.admin.command('ping')
-        print("Successfully connected to MongoDB!")
-        
-        # Create indexes
-        await app.mongodb.boxes.create_index("name")
-        await app.mongodb.boxes.create_index("location")
-        await app.mongodb.items.create_index("name")
-        await app.mongodb.items.create_index("box_id")
-        print("Database indexes created successfully!")
-        
-    except Exception as e:
-        print(f"Failed to connect to MongoDB: {e}")
-        raise
+    print("Starting Box Management System with SQLite...")
+    print(f"Database location: {SQLALCHEMY_DATABASE_URL}")
+    
+    # Create tables if they don't exist
+    Base.metadata.create_all(bind=engine)
+    print("Database tables ready!")
     
     yield
     
     # Shutdown
-    app.mongodb_client.close()
+    print("Shutting down...")
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -98,21 +128,10 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Dynamic CORS configuration
-def get_allowed_origins():
-    """Get allowed origins from environment or allow all in development"""
-    env_origins = os.getenv("CORS_ORIGINS", "")
-    
-    if env_origins:
-        return [origin.strip() for origin in env_origins.split(",")]
-    
-    # In production, you might want to be more restrictive
-    # For now, allow all origins but you can customize this
-    return ["*"]
-
+# CORS configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=get_allowed_origins(),
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -122,17 +141,11 @@ app.add_middleware(
 # Health check
 @app.get("/api/health")
 async def health_check():
-    try:
-        # Check MongoDB connection
-        await app.mongodb_client.admin.command('ping')
-        db_status = "connected"
-    except:
-        db_status = "disconnected"
-    
     return {
         "status": "healthy",
         "timestamp": datetime.utcnow(),
-        "database": db_status
+        "database": "sqlite",
+        "database_file": SQLALCHEMY_DATABASE_URL
     }
 
 # Box endpoints
@@ -141,91 +154,129 @@ async def get_boxes(
     search: Optional[str] = None,
     location: Optional[str] = None,
     sort_by: Optional[str] = "name",
-    sort_order: Optional[str] = "asc"
+    sort_order: Optional[str] = "asc",
+    db: Session = Depends(get_db)
 ):
-    query = {}
+    query = db.query(BoxDB)
     
     if search:
-        # Case-insensitive regex search
-        regex = {"$regex": search, "$options": "i"}
-        query["$or"] = [
-            {"name": regex},
-            {"description": regex},
-            {"location": regex}
-        ]
+        search_filter = or_(
+            BoxDB.name.ilike(f"%{search}%"),
+            BoxDB.description.ilike(f"%{search}%"),
+            BoxDB.location.ilike(f"%{search}%")
+        )
+        query = query.filter(search_filter)
     
     if location:
-        query["location"] = {"$regex": location, "$options": "i"}
+        query = query.filter(BoxDB.location.ilike(f"%{location}%"))
     
-    # Determine sort order
-    sort_direction = 1 if sort_order == "asc" else -1
+    # Sorting
+    if sort_order == "desc":
+        query = query.order_by(getattr(BoxDB, sort_by).desc())
+    else:
+        query = query.order_by(getattr(BoxDB, sort_by))
     
-    cursor = app.mongodb.boxes.find(query).sort(sort_by, sort_direction)
-    boxes = []
+    boxes = query.all()
+    result = []
     
-    async for box in cursor:
-        # Count items for each box
-        item_count = await app.mongodb.items.count_documents({"box_id": box["id"]})
-        box["item_count"] = item_count
-        boxes.append(Box(**box))
+    for box in boxes:
+        item_count = db.query(ItemDB).filter(ItemDB.box_id == box.id).count()
+        box_dict = {
+            "id": box.id,
+            "name": box.name,
+            "location": box.location,
+            "description": box.description,
+            "created_at": box.created_at,
+            "updated_at": box.updated_at,
+            "item_count": item_count
+        }
+        result.append(Box(**box_dict))
     
-    return boxes
+    return result
 
 @app.post("/api/boxes", response_model=Box)
-async def create_box(box: BoxCreate):
-    new_box = Box(**box.dict())
-    box_dict = new_box.dict()
+async def create_box(box: BoxCreate, db: Session = Depends(get_db)):
+    db_box = BoxDB(
+        id=str(uuid.uuid4()),
+        name=box.name,
+        location=box.location,
+        description=box.description,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow()
+    )
+    db.add(db_box)
+    db.commit()
+    db.refresh(db_box)
     
-    await app.mongodb.boxes.insert_one(box_dict)
-    return new_box
+    return Box(
+        id=db_box.id,
+        name=db_box.name,
+        location=db_box.location,
+        description=db_box.description,
+        created_at=db_box.created_at,
+        updated_at=db_box.updated_at,
+        item_count=0
+    )
 
 @app.get("/api/boxes/{box_id}", response_model=Box)
-async def get_box(box_id: str):
-    box = await app.mongodb.boxes.find_one({"id": box_id})
+async def get_box(box_id: str, db: Session = Depends(get_db)):
+    box = db.query(BoxDB).filter(BoxDB.id == box_id).first()
     if not box:
         raise HTTPException(status_code=404, detail="Box not found")
     
-    # Count items
-    item_count = await app.mongodb.items.count_documents({"box_id": box_id})
-    box["item_count"] = item_count
+    item_count = db.query(ItemDB).filter(ItemDB.box_id == box_id).count()
     
-    return Box(**box)
+    return Box(
+        id=box.id,
+        name=box.name,
+        location=box.location,
+        description=box.description,
+        created_at=box.created_at,
+        updated_at=box.updated_at,
+        item_count=item_count
+    )
 
 @app.put("/api/boxes/{box_id}", response_model=Box)
-async def update_box(box_id: str, box_update: BoxUpdate):
-    # Find existing box
-    existing_box = await app.mongodb.boxes.find_one({"id": box_id})
-    if not existing_box:
-        raise HTTPException(status_code=404, detail="Box not found")
-    
-    # Update fields
-    update_data = {k: v for k, v in box_update.dict().items() if v is not None}
-    if update_data:
-        update_data["updated_at"] = datetime.utcnow()
-        await app.mongodb.boxes.update_one(
-            {"id": box_id},
-            {"$set": update_data}
-        )
-    
-    # Return updated box
-    updated_box = await app.mongodb.boxes.find_one({"id": box_id})
-    item_count = await app.mongodb.items.count_documents({"box_id": box_id})
-    updated_box["item_count"] = item_count
-    
-    return Box(**updated_box)
-
-@app.delete("/api/boxes/{box_id}")
-async def delete_box(box_id: str):
-    # Check if box exists
-    box = await app.mongodb.boxes.find_one({"id": box_id})
+async def update_box(box_id: str, box_update: BoxUpdate, db: Session = Depends(get_db)):
+    box = db.query(BoxDB).filter(BoxDB.id == box_id).first()
     if not box:
         raise HTTPException(status_code=404, detail="Box not found")
     
-    # Delete all items in the box (cascading delete)
-    await app.mongodb.items.delete_many({"box_id": box_id})
+    if box_update.name is not None:
+        box.name = box_update.name
+    if box_update.location is not None:
+        box.location = box_update.location
+    if box_update.description is not None:
+        box.description = box_update.description
+    
+    box.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(box)
+    
+    item_count = db.query(ItemDB).filter(ItemDB.box_id == box_id).count()
+    
+    return Box(
+        id=box.id,
+        name=box.name,
+        location=box.location,
+        description=box.description,
+        created_at=box.created_at,
+        updated_at=box.updated_at,
+        item_count=item_count
+    )
+
+@app.delete("/api/boxes/{box_id}")
+async def delete_box(box_id: str, db: Session = Depends(get_db)):
+    box = db.query(BoxDB).filter(BoxDB.id == box_id).first()
+    if not box:
+        raise HTTPException(status_code=404, detail="Box not found")
+    
+    # Delete all items in the box
+    db.query(ItemDB).filter(ItemDB.box_id == box_id).delete()
     
     # Delete the box
-    await app.mongodb.boxes.delete_one({"id": box_id})
+    db.delete(box)
+    db.commit()
     
     return {"message": "Box and all its items deleted successfully"}
 
@@ -237,91 +288,128 @@ async def get_items_in_box(
     min_quantity: Optional[int] = None,
     max_quantity: Optional[int] = None,
     sort_by: Optional[str] = "name",
-    sort_order: Optional[str] = "asc"
+    sort_order: Optional[str] = "asc",
+    db: Session = Depends(get_db)
 ):
     # Check if box exists
-    box = await app.mongodb.boxes.find_one({"id": box_id})
+    box = db.query(BoxDB).filter(BoxDB.id == box_id).first()
     if not box:
         raise HTTPException(status_code=404, detail="Box not found")
     
-    query = {"box_id": box_id}
+    query = db.query(ItemDB).filter(ItemDB.box_id == box_id)
     
     if search:
-        regex = {"$regex": search, "$options": "i"}
-        query["$or"] = [
-            {"name": regex},
-            {"details": regex}
-        ]
+        search_filter = or_(
+            ItemDB.name.ilike(f"%{search}%"),
+            ItemDB.details.ilike(f"%{search}%")
+        )
+        query = query.filter(search_filter)
     
     if min_quantity is not None:
-        query["quantity"] = {"$gte": min_quantity}
+        query = query.filter(ItemDB.quantity >= min_quantity)
     
     if max_quantity is not None:
-        if "quantity" in query:
-            query["quantity"]["$lte"] = max_quantity
-        else:
-            query["quantity"] = {"$lte": max_quantity}
+        query = query.filter(ItemDB.quantity <= max_quantity)
     
-    sort_direction = 1 if sort_order == "asc" else -1
+    # Sorting
+    if sort_order == "desc":
+        query = query.order_by(getattr(ItemDB, sort_by).desc())
+    else:
+        query = query.order_by(getattr(ItemDB, sort_by))
     
-    cursor = app.mongodb.items.find(query).sort(sort_by, sort_direction)
-    items = []
+    items = query.all()
     
-    async for item in cursor:
-        items.append(Item(**item))
-    
-    return items
+    return [Item(
+        id=item.id,
+        name=item.name,
+        quantity=item.quantity,
+        details=item.details,
+        box_id=item.box_id,
+        created_at=item.created_at,
+        updated_at=item.updated_at
+    ) for item in items]
 
 @app.post("/api/items", response_model=Item)
-async def create_item(item: ItemCreate):
+async def create_item(item: ItemCreate, db: Session = Depends(get_db)):
     # Check if box exists
-    box = await app.mongodb.boxes.find_one({"id": item.box_id})
+    box = db.query(BoxDB).filter(BoxDB.id == item.box_id).first()
     if not box:
         raise HTTPException(status_code=404, detail="Box not found")
     
-    new_item = Item(**item.dict())
-    item_dict = new_item.dict()
+    db_item = ItemDB(
+        id=str(uuid.uuid4()),
+        name=item.name,
+        quantity=item.quantity,
+        details=item.details,
+        box_id=item.box_id,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow()
+    )
+    db.add(db_item)
+    db.commit()
+    db.refresh(db_item)
     
-    await app.mongodb.items.insert_one(item_dict)
-    return new_item
+    return Item(
+        id=db_item.id,
+        name=db_item.name,
+        quantity=db_item.quantity,
+        details=db_item.details,
+        box_id=db_item.box_id,
+        created_at=db_item.created_at,
+        updated_at=db_item.updated_at
+    )
 
 @app.get("/api/items/{item_id}", response_model=Item)
-async def get_item(item_id: str):
-    item = await app.mongodb.items.find_one({"id": item_id})
+async def get_item(item_id: str, db: Session = Depends(get_db)):
+    item = db.query(ItemDB).filter(ItemDB.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
     
-    return Item(**item)
+    return Item(
+        id=item.id,
+        name=item.name,
+        quantity=item.quantity,
+        details=item.details,
+        box_id=item.box_id,
+        created_at=item.created_at,
+        updated_at=item.updated_at
+    )
 
 @app.put("/api/items/{item_id}", response_model=Item)
-async def update_item(item_id: str, item_update: ItemUpdate):
-    # Find existing item
-    existing_item = await app.mongodb.items.find_one({"id": item_id})
-    if not existing_item:
-        raise HTTPException(status_code=404, detail="Item not found")
-    
-    # Update fields
-    update_data = {k: v for k, v in item_update.dict().items() if v is not None}
-    if update_data:
-        update_data["updated_at"] = datetime.utcnow()
-        await app.mongodb.items.update_one(
-            {"id": item_id},
-            {"$set": update_data}
-        )
-    
-    # Return updated item
-    updated_item = await app.mongodb.items.find_one({"id": item_id})
-    return Item(**updated_item)
-
-@app.delete("/api/items/{item_id}")
-async def delete_item(item_id: str):
-    # Check if item exists
-    item = await app.mongodb.items.find_one({"id": item_id})
+async def update_item(item_id: str, item_update: ItemUpdate, db: Session = Depends(get_db)):
+    item = db.query(ItemDB).filter(ItemDB.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
     
-    # Delete the item
-    await app.mongodb.items.delete_one({"id": item_id})
+    if item_update.name is not None:
+        item.name = item_update.name
+    if item_update.quantity is not None:
+        item.quantity = item_update.quantity
+    if item_update.details is not None:
+        item.details = item_update.details
+    
+    item.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(item)
+    
+    return Item(
+        id=item.id,
+        name=item.name,
+        quantity=item.quantity,
+        details=item.details,
+        box_id=item.box_id,
+        created_at=item.created_at,
+        updated_at=item.updated_at
+    )
+
+@app.delete("/api/items/{item_id}")
+async def delete_item(item_id: str, db: Session = Depends(get_db)):
+    item = db.query(ItemDB).filter(ItemDB.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    
+    db.delete(item)
+    db.commit()
     
     return {"message": "Item deleted successfully"}
 
@@ -329,71 +417,60 @@ async def delete_item(item_id: str):
 @app.get("/api/search", response_model=List[SearchResult])
 async def global_search(
     q: str = Query(..., min_length=1),
-    limit: int = 50
+    limit: int = 50,
+    db: Session = Depends(get_db)
 ):
     results = []
-    search_regex = {"$regex": q, "$options": "i"}
     
     # Search boxes
-    box_query = {
-        "$or": [
-            {"name": search_regex},
-            {"description": search_regex},
-            {"location": search_regex}
-        ]
-    }
+    box_query = db.query(BoxDB).filter(
+        or_(
+            BoxDB.name.ilike(f"%{q}%"),
+            BoxDB.description.ilike(f"%{q}%"),
+            BoxDB.location.ilike(f"%{q}%")
+        )
+    ).limit(limit // 2)
     
-    cursor = app.mongodb.boxes.find(box_query).limit(limit // 2)
-    async for box in cursor:
+    for box in box_query:
         results.append(SearchResult(
             type="box",
-            id=box["id"],
-            name=box["name"],
-            details=box.get("description", ""),
-            location=box.get("location", "")
+            id=box.id,
+            name=box.name,
+            details=box.description,
+            location=box.location
         ))
     
     # Search items
-    item_query = {
-        "$or": [
-            {"name": search_regex},
-            {"details": search_regex}
-        ]
-    }
+    item_query = db.query(ItemDB).filter(
+        or_(
+            ItemDB.name.ilike(f"%{q}%"),
+            ItemDB.details.ilike(f"%{q}%")
+        )
+    ).limit(limit // 2)
     
-    cursor = app.mongodb.items.find(item_query).limit(limit // 2)
-    async for item in cursor:
+    for item in item_query:
         # Get box name for context
-        box = await app.mongodb.boxes.find_one({"id": item["box_id"]})
-        box_name = box["name"] if box else "Unknown Box"
+        box = db.query(BoxDB).filter(BoxDB.id == item.box_id).first()
+        box_name = box.name if box else "Unknown Box"
         
         results.append(SearchResult(
             type="item",
-            id=item["id"],
-            name=item["name"],
-            details=item.get("details", ""),
-            box_id=item["box_id"],
+            id=item.id,
+            name=item.name,
+            details=item.details,
+            box_id=item.box_id,
             box_name=box_name,
-            quantity=item.get("quantity", 1)
+            quantity=item.quantity
         ))
     
     return results
 
 # Statistics endpoint
 @app.get("/api/stats")
-async def get_statistics():
-    total_boxes = await app.mongodb.boxes.count_documents({})
-    total_items = await app.mongodb.items.count_documents({})
-    
-    # Calculate total quantity
-    pipeline = [
-        {"$group": {"_id": None, "total_quantity": {"$sum": "$quantity"}}}
-    ]
-    
-    cursor = app.mongodb.items.aggregate(pipeline)
-    total_quantity = 0
-    async for result in cursor:
-        total_quantity = result.get("total_quantity", 0)
+async def get_statistics(db: Session = Depends(get_db)):
+    total_boxes = db.query(func.count(BoxDB.id)).scalar()
+    total_items = db.query(func.count(ItemDB.id)).scalar()
+    total_quantity = db.query(func.sum(ItemDB.quantity)).scalar() or 0
     
     return {
         "total_boxes": total_boxes,
@@ -404,5 +481,5 @@ async def get_statistics():
 
 if __name__ == "__main__":
     import uvicorn
-    print("Starting Box Management System Backend...")
+    print("Starting Box Management System Backend with SQLite...")
     uvicorn.run(app, host="0.0.0.0", port=8000)
