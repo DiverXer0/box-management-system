@@ -221,7 +221,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - FastAPI for the excellent Python framework
 - React team for the powerful UI library
 - SQLite for the reliable embedded database
-- All contributors and users
+- ClaudeAI for actually building it!
 
 ## 📞 Support
 
